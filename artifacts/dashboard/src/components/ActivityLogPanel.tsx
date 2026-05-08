@@ -1,4 +1,4 @@
-import { useGetBotLogs } from "@workspace/api-client-react";
+import { useGetBotLogs, getGetBotLogsQueryKey } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Terminal, AlertCircle, Info, CheckCircle2 } from "lucide-react";
 import { format } from "date-fns";
@@ -6,7 +6,7 @@ import { format } from "date-fns";
 export function ActivityLogPanel() {
   const { data: logs } = useGetBotLogs(
     { limit: 100 },
-    { query: { refetchInterval: 3000 } }
+    { query: { queryKey: getGetBotLogsQueryKey({ limit: 100 }), refetchInterval: 3000 } }
   );
 
   const getLogIcon = (level: string) => {

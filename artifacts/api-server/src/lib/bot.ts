@@ -532,19 +532,37 @@ export async function startBot(): Promise<{ success: boolean; message: string }>
     await page.waitForTimeout(3000);
     await takeScreenshot();
 
-    // Try to enter free exploration first
-    const freeEntered = await tryClick(
-      'button:has-text("EXPLORE THE MINE FREE"), a:has-text("EXPLORE THE MINE FREE"), button:has-text("Explore")',
-      "Enter free exploration"
+    // Try to click "Connect Wallet" first so the WalletConnect popup appears
+    const walletBtnClicked = await tryClick(
+      [
+        'button:has-text("Connect Wallet")',
+        'button:has-text("CONNECT WALLET")',
+        'button:has-text("Connect")',
+        'a:has-text("Connect Wallet")',
+        '[class*="connect"][class*="wallet"]',
+        '[data-testid*="connect"]',
+      ].join(", "),
+      "Connect Wallet"
     );
 
-    if (freeEntered) {
-      addLog("info", "Entered free exploration mode. Waiting for game to load...");
-      await page.waitForTimeout(3000);
+    if (walletBtnClicked) {
+      addLog("info", "Wallet connect popup triggered — check the Bot Eye View for the QR code.");
+      await page.waitForTimeout(2000);
       await takeScreenshot();
+    } else {
+      // Fall back to free exploration if no wallet button found
+      const freeEntered = await tryClick(
+        'button:has-text("EXPLORE THE MINE FREE"), a:has-text("EXPLORE THE MINE FREE"), button:has-text("Explore")',
+        "Enter free exploration"
+      );
+      if (freeEntered) {
+        addLog("info", "Entered free exploration mode. Waiting for game to load...");
+        await page.waitForTimeout(3000);
+        await takeScreenshot();
+      }
     }
 
-    addLog("info", "Game loaded. Please connect your wallet in the browser window to unlock all features.");
+    addLog("info", "Scan the QR code in Bot Eye View, or connect your wallet — bot will detect it automatically.");
     setStatus({
       state: "waiting_for_wallet",
       message: "Connect your wallet in the browser window, then the bot will start automatically.",
@@ -566,9 +584,12 @@ export async function startBot(): Promise<{ success: boolean; message: string }>
       }
       walletConnected = await checkWalletConnected();
       attempts++;
-      if (attempts % 10 === 0) {
-        addLog("info", `Still waiting for game access... (${attempts}s)`);
+      // Take a screenshot every 3s so the dashboard Bot Eye View stays current
+      if (attempts % 3 === 0) {
         await takeScreenshot();
+      }
+      if (attempts % 10 === 0) {
+        addLog("info", `Waiting for wallet connection... (${attempts}s) — check Bot Eye View for QR code`);
       }
     }
 

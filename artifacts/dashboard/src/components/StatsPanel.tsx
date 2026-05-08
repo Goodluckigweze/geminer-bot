@@ -1,11 +1,11 @@
-import { useGetBotStats } from "@workspace/api-client-react";
+import { useGetBotStats, getGetBotStatsQueryKey } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Database, Target, Dices, Coins, Zap, Clock } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
 export function StatsPanel() {
   const { data: stats } = useGetBotStats({
-    query: { refetchInterval: 5000 }
+    query: { queryKey: getGetBotStatsQueryKey(), refetchInterval: 5000 }
   });
 
   const formatUptime = (ms: number | null | undefined) => {

@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 export function BotStatusPanel() {
   const queryClient = useQueryClient();
   const { data: status, isLoading } = useGetBotStatus({
-    query: { refetchInterval: 2000 }
+    query: { queryKey: getGetBotStatusQueryKey(), refetchInterval: 2000 }
   });
 
   const launchBot = useLaunchBot();
