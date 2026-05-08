@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "M-7zF1k1lnPYEZv8kzQxO"
+uri = "file://gemminer-bot-export.tar.gz"
+type = "unspecified"
+title = "GemMiner Bot — Full Project Export"
