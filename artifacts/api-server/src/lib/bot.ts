@@ -1,4 +1,6 @@
 import { chromium, type Browser, type Page } from "playwright";
+import path from "path";
+import fs from "fs";
 import { logger } from "./logger";
 
 export type BotState =
@@ -37,7 +39,6 @@ export interface BotStatus {
 let browser: Browser | null = null;
 let page: Page | null = null;
 let loopTimer: ReturnType<typeof setTimeout> | null = null;
-let walletCheckTimer: ReturnType<typeof setInterval> | null = null;
 
 let logId = 0;
 const logs: LogEntry[] = [];
@@ -58,6 +59,10 @@ let status: BotStatus = {
   stoppedAt: null,
   currentAction: null,
 };
+
+const SCREENSHOT_PATH = path.join(process.cwd(), "dist", "bot-screen.png");
+const CLICK_TIMEOUT = 2000;
+const NAV_TIMEOUT = 8000;
 
 function addLog(level: LogEntry["level"], message: string): void {
   const entry: LogEntry = {
@@ -92,218 +97,382 @@ export function getBotStats(): BotStats {
   return { ...stats };
 }
 
-async function safeClick(selector: string, description: string): Promise<boolean> {
+export function getScreenshotPath(): string {
+  return SCREENSHOT_PATH;
+}
+
+async function takeScreenshot(): Promise<void> {
+  if (!page) return;
+  try {
+    const dir = path.dirname(SCREENSHOT_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    await page.screenshot({ path: SCREENSHOT_PATH, timeout: 5000 });
+  } catch {
+    // ignore screenshot errors
+  }
+}
+
+// Try to click a locator — returns true if clicked, false if not found/visible
+async function tryClick(selector: string, description: string): Promise<boolean> {
   if (!page) return false;
   try {
-    const el = await page.$(selector);
-    if (el) {
-      await el.click();
-      addLog("info", `Clicked: ${description}`);
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-async function tryMissions(): Promise<void> {
-  if (!page) return;
-  setStatus({ currentAction: "Checking missions..." });
-  addLog("info", "Looking for mission opportunities...");
-
-  try {
-    // Navigate to missions tab if present
-    const missionTab = await page.$('[data-tab="missions"], button:has-text("Missions"), [class*="mission"]');
-    if (missionTab) {
-      await missionTab.click();
-      await page.waitForTimeout(1500);
-    }
-
-    // Try clicking any "claim" or "complete" or "start" buttons in missions
-    const claimSelectors = [
-      'button:has-text("Claim")',
-      'button:has-text("Complete")',
-      'button:has-text("Start Mission")',
-      'button:has-text("Mine")',
-      '[class*="claim"]',
-      '[class*="complete-btn"]',
-    ];
-
-    let claimed = false;
-    for (const sel of claimSelectors) {
-      try {
-        const buttons = await page.$$(sel);
-        for (const btn of buttons) {
-          const isVisible = await btn.isVisible();
-          if (isVisible) {
-            await btn.click();
-            await page.waitForTimeout(800);
-            stats.missionsCompleted++;
-            stats.actionsTotal++;
-            claimed = true;
-            addLog("success", "Completed a mission!");
-          }
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    if (!claimed) {
-      addLog("info", "No missions available right now.");
-    }
-  } catch (err) {
-    addLog("warning", `Mission check failed: ${String(err)}`);
-  }
-}
-
-async function tryWheel(): Promise<void> {
-  if (!page) return;
-  setStatus({ currentAction: "Trying wheel spin..." });
-
-  try {
-    // Look for wheel tab or button
-    const wheelTab = await page.$('button:has-text("Wheel"), [data-tab="wheel"], [class*="wheel"]');
-    if (wheelTab) {
-      await wheelTab.click();
-      await page.waitForTimeout(1500);
-    }
-
-    const spinBtn = await page.$('button:has-text("Spin"), [class*="spin-btn"], [class*="spin_btn"]');
-    if (spinBtn) {
-      const isVisible = await spinBtn.isVisible();
-      const isEnabled = await spinBtn.isEnabled();
-      if (isVisible && isEnabled) {
-        await spinBtn.click();
-        await page.waitForTimeout(3000);
-        stats.wheelSpins++;
-        stats.actionsTotal++;
-        addLog("success", "Spun the wheel!");
-        return;
-      }
-    }
-    addLog("info", "Wheel not available or already spun.");
-  } catch (err) {
-    addLog("warning", `Wheel attempt failed: ${String(err)}`);
-  }
-}
-
-async function tryCoinflip(): Promise<void> {
-  if (!page) return;
-  setStatus({ currentAction: "Trying coinflip..." });
-
-  try {
-    const coinTab = await page.$('button:has-text("Coinflip"), button:has-text("Coin"), [data-tab="coinflip"]');
-    if (coinTab) {
-      await coinTab.click();
-      await page.waitForTimeout(1500);
-    }
-
-    // Click heads or tails
-    const headsBtn = await page.$('button:has-text("Heads"), button:has-text("heads")');
-    if (headsBtn && await headsBtn.isVisible()) {
-      await headsBtn.click();
-      await page.waitForTimeout(500);
-    }
-
-    const flipBtn = await page.$('button:has-text("Flip"), button:has-text("flip")');
-    if (flipBtn && await flipBtn.isVisible() && await flipBtn.isEnabled()) {
-      await flipBtn.click();
-      await page.waitForTimeout(2000);
-      stats.coinFlips++;
-      stats.actionsTotal++;
-      addLog("success", "Flipped a coin!");
-      return;
-    }
-    addLog("info", "Coinflip not available.");
-  } catch (err) {
-    addLog("warning", `Coinflip attempt failed: ${String(err)}`);
-  }
-}
-
-async function dismissDialogs(): Promise<void> {
-  if (!page) return;
-  try {
-    // Dismiss any modal/popup by clicking "tap to continue" or close buttons
-    const dismissSelectors = [
-      '[class*="tap-to-continue"]',
-      'text=Tap to continue',
-      '[class*="close"]',
-      '[aria-label="Close"]',
-    ];
-    for (const sel of dismissSelectors) {
-      try {
-        const el = await page.$(sel);
-        if (el && await el.isVisible()) {
-          await el.click();
-          await page.waitForTimeout(500);
-        }
-      } catch {
-        // ignore
-      }
-    }
-  } catch {
-    // ignore
-  }
-}
-
-async function checkWalletConnected(): Promise<boolean> {
-  if (!page) return false;
-  try {
-    // Check if user has wallet connected by looking for wallet-gated content
-    // or absence of "Connect Wallet" button
-    const connectBtn = await page.$('button:has-text("Connect"), button:has-text("Enter the Mines")');
-    if (connectBtn) {
-      const text = await connectBtn.innerText();
-      // If there's an "Enter the Mines" button, wallet may not be connected yet
-      // We look for game UI that indicates we're inside the game
-      const inGame = await page.$('[class*="mine"], [class*="mission"], [class*="earn"]');
-      return !!inGame;
-    }
-    // If no connect button, assume connected
+    const loc = page.locator(selector).first();
+    await loc.waitFor({ state: "visible", timeout: CLICK_TIMEOUT });
+    await loc.click({ timeout: CLICK_TIMEOUT });
+    addLog("info", `Clicked: ${description}`);
     return true;
   } catch {
     return false;
   }
 }
 
+// Get all visible text content on page for debugging
+async function getVisibleText(): Promise<string> {
+  if (!page) return "";
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return await page.evaluate((): string => {
+      // runs in browser context
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const d = (globalThis as any).document as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const visible: string[] = Array.from(d.querySelectorAll(
+        "button, a, [role='button'], [class*='tab'], [class*='nav'], [class*='btn']"
+      ) as any[])
+        .filter((el: any) => {
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        })
+        .map((el: any) => (el.textContent ?? "").trim())
+        .filter((t: string) => t.length > 0)
+        .slice(0, 30);
+      return visible.join(" | ");
+    });
+  } catch {
+    return "";
+  }
+}
+
+// Get all visible buttons/links for smart interaction
+async function getVisibleButtons(): Promise<Array<{ text: string }>> {
+  if (!page) return [];
+  try {
+    return await page.evaluate((): Array<{ text: string }> => {
+      // runs in browser context
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const d = (globalThis as any).document as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = (globalThis as any).window as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (Array.from(d.querySelectorAll("button, a, [role='button']") as any[]) as any[])
+        .filter((el: any) => {
+          const rect = el.getBoundingClientRect();
+          const style = w.getComputedStyle(el);
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            style.opacity !== "0"
+          );
+        })
+        .map((el: any) => ({ text: (el.textContent ?? "").trim().slice(0, 50) }))
+        .filter((b: { text: string }) => b.text.length > 0)
+        .slice(0, 20);
+    });
+  } catch {
+    return [];
+  }
+}
+
+// Navigate to a game section by clicking nav tabs
+async function navigateToSection(sectionKeywords: string[]): Promise<boolean> {
+  if (!page) return false;
+  for (const keyword of sectionKeywords) {
+    const lower = keyword.toLowerCase();
+    // Try various tab/nav selectors
+    const selectors = [
+      `button:has-text("${keyword}")`,
+      `a:has-text("${keyword}")`,
+      `[class*="tab"]:has-text("${keyword}")`,
+      `[class*="nav"]:has-text("${keyword}")`,
+      `[title="${keyword}"]`,
+      `[aria-label="${keyword}"]`,
+      `[class*="${lower}"]`,
+    ];
+    for (const sel of selectors) {
+      if (await tryClick(sel, `Navigate to ${keyword}`)) {
+        await page.waitForTimeout(1500);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+async function dismissDialogs(): Promise<void> {
+  if (!page) return;
+  const dismissors = [
+    'text="Tap to continue"',
+    '[class*="tap-continue"]',
+    '[class*="dialog-close"]',
+    '[class*="modal-close"]',
+    'button[class*="close"]',
+    '[aria-label="Close"]',
+    '[class*="overlay"]:has-text("continue")',
+  ];
+  for (const sel of dismissors) {
+    await tryClick(sel, "Dismiss dialog");
+  }
+}
+
+async function tryMissions(): Promise<void> {
+  if (!page) return;
+  setStatus({ currentAction: "Checking missions..." });
+  addLog("info", "Navigating to missions...");
+  await takeScreenshot();
+
+  await navigateToSection(["Mission", "Missions", "MISSIONS"]);
+  await page.waitForTimeout(2000);
+  await takeScreenshot();
+
+  // Dump visible elements for debugging
+  const visible = await getVisibleText();
+  if (visible) addLog("info", `Visible elements: ${visible.slice(0, 120)}`);
+
+  // Try to click any action buttons in the mission section
+  const claimSelectors = [
+    'button:has-text("Claim")',
+    'button:has-text("claim")',
+    'button:has-text("CLAIM")',
+    'button:has-text("Complete")',
+    'button:has-text("Start")',
+    'button:has-text("Mine")',
+    'button:has-text("MINE")',
+    'button:has-text("Collect")',
+    'button:has-text("Go")',
+    '[class*="claim"]:not([disabled])',
+    '[class*="mission-btn"]',
+    '[class*="collect"]',
+  ];
+
+  let claimed = false;
+  for (const sel of claimSelectors) {
+    try {
+      const locs = page.locator(sel);
+      const count = await locs.count();
+      for (let i = 0; i < Math.min(count, 5); i++) {
+        const loc = locs.nth(i);
+        try {
+          const isVisible = await loc.isVisible();
+          const isEnabled = await loc.isEnabled();
+          if (isVisible && isEnabled) {
+            await loc.click({ timeout: CLICK_TIMEOUT });
+            await page.waitForTimeout(1000);
+            stats.missionsCompleted++;
+            stats.actionsTotal++;
+            claimed = true;
+            addLog("success", "Completed a mission!");
+            await takeScreenshot();
+            await dismissDialogs();
+          }
+        } catch {
+          // ignore individual click failures
+        }
+      }
+    } catch {
+      // ignore selector errors
+    }
+  }
+
+  if (!claimed) {
+    addLog("info", "No claimable missions found this cycle.");
+  }
+}
+
+async function tryWheel(): Promise<void> {
+  if (!page) return;
+  setStatus({ currentAction: "Trying wheel spin..." });
+  addLog("info", "Navigating to wheel...");
+
+  await navigateToSection(["Wheel", "WHEEL", "Spin"]);
+  await page.waitForTimeout(2000);
+  await takeScreenshot();
+
+  const spinSelectors = [
+    'button:has-text("Spin")',
+    'button:has-text("SPIN")',
+    'button:has-text("spin")',
+    '[class*="spin-btn"]',
+    '[class*="spin_btn"]',
+    '[class*="wheel-btn"]',
+    '[class*="spinButton"]',
+  ];
+
+  for (const sel of spinSelectors) {
+    try {
+      const loc = page.locator(sel).first();
+      const isVisible = await loc.isVisible().catch(() => false);
+      const isEnabled = await loc.isEnabled().catch(() => false);
+      if (isVisible && isEnabled) {
+        await loc.click({ timeout: CLICK_TIMEOUT });
+        await page.waitForTimeout(4000); // wait for spin animation
+        stats.wheelSpins++;
+        stats.actionsTotal++;
+        addLog("success", "Spun the wheel!");
+        await takeScreenshot();
+        await dismissDialogs();
+        return;
+      }
+    } catch {
+      // try next
+    }
+  }
+  addLog("info", "Wheel spin not available this cycle.");
+}
+
+async function tryCoinflip(): Promise<void> {
+  if (!page) return;
+  setStatus({ currentAction: "Trying coinflip..." });
+  addLog("info", "Navigating to coinflip...");
+
+  await navigateToSection(["Coinflip", "COINFLIP", "Coin", "coin"]);
+  await page.waitForTimeout(2000);
+  await takeScreenshot();
+
+  // Pick a side first
+  const sideSelectors = [
+    'button:has-text("Heads")',
+    'button:has-text("HEADS")',
+    'button:has-text("Tails")',
+    'button:has-text("TAILS")',
+    '[class*="heads"]',
+    '[class*="tails"]',
+  ];
+  for (const sel of sideSelectors) {
+    const ok = await tryClick(sel, "Select coin side");
+    if (ok) {
+      await page.waitForTimeout(500);
+      break;
+    }
+  }
+
+  // Now flip
+  const flipSelectors = [
+    'button:has-text("Flip")',
+    'button:has-text("FLIP")',
+    'button:has-text("flip")',
+    '[class*="flip-btn"]',
+    '[class*="flipButton"]',
+    '[class*="coinflip-btn"]',
+  ];
+
+  for (const sel of flipSelectors) {
+    try {
+      const loc = page.locator(sel).first();
+      const isVisible = await loc.isVisible().catch(() => false);
+      const isEnabled = await loc.isEnabled().catch(() => false);
+      if (isVisible && isEnabled) {
+        await loc.click({ timeout: CLICK_TIMEOUT });
+        await page.waitForTimeout(3000);
+        stats.coinFlips++;
+        stats.actionsTotal++;
+        addLog("success", "Flipped a coin!");
+        await takeScreenshot();
+        await dismissDialogs();
+        return;
+      }
+    } catch {
+      // try next
+    }
+  }
+  addLog("info", "Coinflip not available this cycle.");
+}
+
 async function gameLoop(): Promise<void> {
   if (status.state !== "running" || !page) return;
 
   try {
-    setStatus({ currentAction: "Dismissing dialogs..." });
+    setStatus({ currentAction: "Starting action cycle..." });
     await dismissDialogs();
+    await page.waitForTimeout(1000);
 
-    // Rotate through game actions
+    // Screenshot at loop start for debugging
+    await takeScreenshot();
+
     await tryMissions();
-    await page.waitForTimeout(2000);
-
     if (status.state !== "running") return;
 
     await tryWheel();
-    await page.waitForTimeout(2000);
-
     if (status.state !== "running") return;
 
     await tryCoinflip();
-    await page.waitForTimeout(2000);
+    if (status.state !== "running") return;
 
-    setStatus({ currentAction: "Waiting for next cycle..." });
-    addLog("info", "Cycle complete. Waiting 30s before next round...");
+    await takeScreenshot();
+    setStatus({ currentAction: "Waiting for next cycle (30s)..." });
+    addLog("info", "Cycle complete. Next round in 30 seconds.");
 
     if (status.state === "running") {
       loopTimer = setTimeout(() => {
         gameLoop().catch((err) => {
           addLog("error", `Game loop error: ${String(err)}`);
           logger.error({ err }, "Game loop crashed");
+          setStatus({ state: "error", message: `Loop crashed: ${String(err)}`, currentAction: null });
         });
       }, 30000);
     }
   } catch (err) {
-    addLog("error", `Game loop error: ${String(err)}`);
+    const msg = String(err);
+    // If the page closed, it means bot was stopped — don't mark as error
+    if (msg.includes("Target page") || msg.includes("browser has been closed")) {
+      addLog("info", "Browser closed — bot stopped.");
+      return;
+    }
+    addLog("error", `Game loop error: ${msg}`);
     logger.error({ err }, "Game loop error");
-    setStatus({ state: "error", message: `Error: ${String(err)}`, currentAction: null });
+    setStatus({ state: "error", message: `Error: ${msg}`, currentAction: null });
+  }
+}
+
+async function checkWalletConnected(): Promise<boolean> {
+  if (!page) return false;
+  try {
+    // Check if we're past the landing page by looking for in-game nav elements
+    const inGame = await page.evaluate((): boolean => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const d = (globalThis as any).document as any;
+      const text = (d.body.innerText as string).toLowerCase();
+      return (
+        text.includes("mission") ||
+        text.includes("earning") ||
+        text.includes("wheel") ||
+        text.includes("coinflip") ||
+        text.includes("forge")
+      );
+    });
+    // Make sure "Enter the Mines" button is NOT still visible
+    const enterBtn = page.locator('button:has-text("Enter the Mines"), button:has-text("ENTER THE MINES")').first();
+    const enterVisible = await enterBtn.isVisible().catch(() => false);
+    return inGame && !enterVisible;
+  } catch {
+    return false;
+  }
+}
+
+async function cleanupBrowser(): Promise<void> {
+  if (loopTimer) {
+    clearTimeout(loopTimer);
+    loopTimer = null;
+  }
+  if (browser) {
+    try {
+      await browser.close();
+    } catch {
+      // ignore
+    }
+    browser = null;
+    page = null;
   }
 }
 
@@ -332,7 +501,12 @@ export async function startBot(): Promise<{ success: boolean; message: string }>
   try {
     browser = await chromium.launch({
       headless: false,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+      ],
     });
 
     const context = await browser.newContext({
@@ -341,50 +515,70 @@ export async function startBot(): Promise<{ success: boolean; message: string }>
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     });
 
+    // Set default timeouts
+    context.setDefaultTimeout(NAV_TIMEOUT);
+    context.setDefaultNavigationTimeout(NAV_TIMEOUT);
+
     page = await context.newPage();
 
     addLog("info", "Navigating to gemminer.app...");
-    setStatus({ currentAction: "Navigating to game..." });
+    setStatus({ currentAction: "Loading game..." });
 
-    await page.goto("https://www.gemminer.app/", { waitUntil: "domcontentloaded", timeout: 30000 });
-
-    addLog("info", "Game loaded. Waiting for wallet connection...");
-    setStatus({
-      state: "waiting_for_wallet",
-      message: "Please connect your wallet in the browser window to continue.",
-      currentAction: "Waiting for wallet connection",
+    await page.goto("https://www.gemminer.app/", {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
     });
 
-    // Poll until wallet is connected or bot is stopped
+    await page.waitForTimeout(3000);
+    await takeScreenshot();
+
+    // Try to enter free exploration first
+    const freeEntered = await tryClick(
+      'button:has-text("EXPLORE THE MINE FREE"), a:has-text("EXPLORE THE MINE FREE"), button:has-text("Explore")',
+      "Enter free exploration"
+    );
+
+    if (freeEntered) {
+      addLog("info", "Entered free exploration mode. Waiting for game to load...");
+      await page.waitForTimeout(3000);
+      await takeScreenshot();
+    }
+
+    addLog("info", "Game loaded. Please connect your wallet in the browser window to unlock all features.");
+    setStatus({
+      state: "waiting_for_wallet",
+      message: "Connect your wallet in the browser window, then the bot will start automatically.",
+      currentAction: "Waiting for wallet connection (or free mode active)",
+    });
+
+    // Poll for wallet connection or game state
     let walletConnected = false;
     let attempts = 0;
-    const maxAttempts = 120; // 2 minutes
+    const maxAttempts = 60; // 60 seconds
+    const getState = (): BotState => status.state;
 
-    while (!walletConnected && attempts < maxAttempts && status.state === "waiting_for_wallet") {
-      await page.waitForTimeout(1000);
+    while (!walletConnected && attempts < maxAttempts && (getState() === "waiting_for_wallet" || getState() === "starting")) {
+      try {
+        await page.waitForTimeout(1000);
+      } catch {
+        // Browser was closed (bot was stopped) — exit cleanly
+        return { success: false, message: "Bot stopped" };
+      }
       walletConnected = await checkWalletConnected();
       attempts++;
-
       if (attempts % 10 === 0) {
-        addLog("info", `Still waiting for wallet... (${attempts}s elapsed)`);
+        addLog("info", `Still waiting for game access... (${attempts}s)`);
+        await takeScreenshot();
       }
     }
 
-    if (status.state !== "waiting_for_wallet") {
-      // Bot was stopped while waiting
-      return { success: false, message: "Bot stopped while waiting for wallet" };
+    if (getState() !== "waiting_for_wallet" && getState() !== "running") {
+      return { success: false, message: "Bot stopped while waiting" };
     }
 
-    if (!walletConnected) {
-      // Try entering without wallet — explore free mode
-      addLog("warning", "Wallet not connected. Trying free exploration mode...");
-      await safeClick('button:has-text("EXPLORE THE MINE FREE"), a:has-text("EXPLORE")', "Explore free");
-      await page.waitForTimeout(2000);
-    } else {
-      addLog("success", "Wallet connected! Entering the mines...");
-      await safeClick('button:has-text("Enter the Mines")', "Enter Mines");
-      await page.waitForTimeout(2000);
-    }
+    // Even if wallet not detected, try to proceed if we can see game elements
+    const buttons = await getVisibleButtons();
+    addLog("info", `Game buttons visible: ${buttons.map((b) => b.text).join(", ").slice(0, 150)}`);
 
     stats.sessionStartedAt = new Date().toISOString();
     setStatus({
@@ -392,9 +586,8 @@ export async function startBot(): Promise<{ success: boolean; message: string }>
       message: "Bot is running the automation loop.",
       currentAction: "Starting game loop",
     });
-    addLog("success", "Bot is now running! Starting automation loop...");
+    addLog("success", "Bot is now running!");
 
-    // Start the game loop
     await gameLoop();
 
     return { success: true, message: "Bot started successfully" };
@@ -409,26 +602,6 @@ export async function startBot(): Promise<{ success: boolean; message: string }>
     });
     await cleanupBrowser();
     return { success: false, message: msg };
-  }
-}
-
-async function cleanupBrowser(): Promise<void> {
-  if (loopTimer) {
-    clearTimeout(loopTimer);
-    loopTimer = null;
-  }
-  if (walletCheckTimer) {
-    clearInterval(walletCheckTimer);
-    walletCheckTimer = null;
-  }
-  if (browser) {
-    try {
-      await browser.close();
-    } catch {
-      // ignore
-    }
-    browser = null;
-    page = null;
   }
 }
 

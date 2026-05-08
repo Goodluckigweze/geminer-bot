@@ -1,11 +1,12 @@
 import { Router, type IRouter } from "express";
+import fs from "fs";
 import {
   GetBotStatusResponse,
   GetBotLogsResponse,
   GetBotLogsQueryParams,
   GetBotStatsResponse,
 } from "@workspace/api-zod";
-import { getBotStatus, getBotLogs, getBotStats, startBot, stopBot } from "../lib/bot";
+import { getBotStatus, getBotLogs, getBotStats, startBot, stopBot, getScreenshotPath } from "../lib/bot";
 
 const router: IRouter = Router();
 
@@ -21,12 +22,10 @@ router.post("/bot/start", async (req, res): Promise<void> => {
     return;
   }
 
-  // Start bot in background — don't await the whole thing
   startBot().catch((err) => {
     req.log.error({ err }, "Bot start background error");
   });
 
-  // Return immediately with starting status
   await new Promise((r) => setTimeout(r, 200));
   const status = getBotStatus();
   res.json(GetBotStatusResponse.parse(status));
@@ -48,6 +47,17 @@ router.get("/bot/logs", async (req, res): Promise<void> => {
 router.get("/bot/stats", async (_req, res): Promise<void> => {
   const stats = getBotStats();
   res.json(GetBotStatsResponse.parse(stats));
+});
+
+router.get("/bot/screenshot", async (_req, res): Promise<void> => {
+  const screenshotPath = getScreenshotPath();
+  if (!fs.existsSync(screenshotPath)) {
+    res.status(404).json({ error: "No screenshot available yet" });
+    return;
+  }
+  res.setHeader("Content-Type", "image/png");
+  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  res.sendFile(screenshotPath);
 });
 
 export default router;
